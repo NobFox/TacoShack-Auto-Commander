@@ -453,9 +453,13 @@ def display_loop():
                         colour = RED
                         if cmd not in beeped_for:
                             beeped_for.add(cmd)
-                            winsound.Beep(1000, 200)
-                            time.sleep(0.1)
-                            winsound.Beep(1000, 200)
+                            # No beeps during the first 45s — startup volley
+                            # doesn't need a warning, you just launched it
+                            uptime = (now - start_time).total_seconds() if start_time else 0
+                            if uptime > 45:
+                                winsound.Beep(1000, 200)
+                                time.sleep(0.1)
+                                winsound.Beep(1000, 200)
                     elif secs_left <= 30:
                         colour = YELLOW
                         beeped_for.discard(cmd)  # reset so it beeps again next countdown
@@ -569,9 +573,9 @@ def main():
 
     now = datetime.now()
     for i, (cmd, cooldown) in enumerate(COMMANDS.items()):
-        next_run[cmd]   = now + timedelta(seconds=i * 8)
+        next_run[cmd]   = now + timedelta(seconds=10 + i * 8)
         run_counts[cmd] = run_counts.get(cmd, 0)  # preserve loaded count
-        log(f"{cmd} firing at startup", CYAN)
+        log(f"{cmd} firing in {10 + i * 8}s", CYAN)
 
     print()
 
