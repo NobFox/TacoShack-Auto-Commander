@@ -430,7 +430,7 @@ def display_loop():
             status = f"{GREEN}RUNNING — press P to pause{RESET}"
 
         print(f"{BOLD}{CYAN}{'─'*52}")
-        print(f"  TacoShack Auto-Commander  |  Ctrl+C to stop")
+        print(f"  TacoShack Auto-Commander  |  Close window to stop")
         print(f"{'─'*52}{RESET}")
         print(f"  {status}")
         print(f"  Uptime: {format_uptime()}   |   Press C to recalibrate")
