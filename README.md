@@ -108,8 +108,8 @@ Launch the script via `tacoshack.bat`. The main display shows:
 
 The script is designed to run in the background while you work. When a command is due, it will:
 
-1. Wait for a 2 second gap in your typing so it doesn't interrupt you mid-sentence
-2. Switch to Discord
+1. Switch to Discord
+2. Wait for a 2 second gap in your typing so it doesn't accidentally send half a sentence with your command on the end
 3. Clear the message box of anything that may have landed there
 4. Paste and send the command
 5. Return focus to whatever you were doing
