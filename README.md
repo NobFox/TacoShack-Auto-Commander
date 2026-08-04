@@ -99,6 +99,7 @@ Launch the script via `tacoshack.bat`. On startup there's a 10 second grace peri
 
 **Keyboard shortcuts:**
 - **P** — pause or resume all commands
+- **B** — toggle warning beeps on/off (for unattended mode)
 - **C** — pause and recalibrate mouse positions (useful if you've resized or moved Discord)
 - **Close the window** — stops the script
 

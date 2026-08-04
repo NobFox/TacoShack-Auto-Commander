@@ -49,6 +49,7 @@ last_sent  = {}
 run_counts = {}
 lock       = threading.Lock()
 paused      = False
+beeps_enabled = True
 busy        = False
 calibrating = False
 start_time  = None
@@ -418,12 +419,14 @@ def scheduler():
 # ─────────────────────────────────────────────
 
 def key_listener():
-    global paused, calibrating
+    global paused, calibrating, beeps_enabled
     while True:
         if msvcrt.kbhit():
             key = msvcrt.getwch().lower()
             if key == 'p':
                 paused = not paused
+            elif key == 'b':
+                beeps_enabled = not beeps_enabled
             elif key == 'c' and not calibrating:
                 calibrating = True
                 paused_before = paused
@@ -459,7 +462,8 @@ def display_loop():
         print(f"  TacoShack Auto-Commander  |  Close window to stop")
         print(f"{'─'*52}{RESET}")
         print(f"  {status}")
-        print(f"  Uptime: {format_uptime()}   |   Press C to recalibrate")
+        beep_status = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
+        print(f"  Uptime: {format_uptime()}   |   C recalibrate   |   B beeps: {beep_status}")
         print()
         print(f"  {'Command':<14} {'Next in':>8}   {'Last sent':<10}")
         print(f"  {'─'*13} {'─'*8}   {'─'*10}")
@@ -482,7 +486,7 @@ def display_loop():
                             # No beeps during the first 45s — startup volley
                             # doesn't need a warning, you just launched it
                             uptime = (now - start_time).total_seconds() if start_time else 0
-                            if uptime > 45:
+                            if uptime > 45 and beeps_enabled:
                                 winsound.Beep(1000, 200)
                                 time.sleep(0.1)
                                 winsound.Beep(1000, 200)
