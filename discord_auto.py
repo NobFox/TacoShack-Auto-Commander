@@ -199,7 +199,10 @@ def random_delay() -> int:
 
 def format_countdown(seconds: float) -> str:
     seconds = max(0, int(seconds))
-    m, s = divmod(seconds, 60)
+    h, rem = divmod(seconds, 3600)
+    m, s   = divmod(rem, 60)
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
 
@@ -241,7 +244,30 @@ def get_discord_msgbox_position():
 
 def run_calibration():
     global discord_taskbar_pos, discord_msgbox_pos
+    old_commands = dict(COMMANDS)  # snapshot before reload
     load_config()
+
+    # Adjust in-flight countdowns to reflect any cooldown changes.
+    # e.g. /work had 360s, config now says 540s, 3 min left on the
+    # countdown -> shift next_run by +180s so it shows 6 min left.
+    with lock:
+        now = datetime.now()
+        for cmd, new_cd in COMMANDS.items():
+            if cmd in old_commands and cmd in next_run:
+                delta = new_cd - old_commands[cmd]
+                if delta:
+                    next_run[cmd] = max(now, next_run[cmd] + timedelta(seconds=delta))
+                    log(f"{cmd} cooldown {old_commands[cmd]}s -> {new_cd}s, countdown adjusted", CYAN)
+            elif cmd not in old_commands:
+                # brand new command from the config: schedule a full cooldown
+                next_run[cmd] = now + timedelta(seconds=new_cd)
+                log(f"{cmd} added, first run in {new_cd}s", CYAN)
+        # commands removed from the config: stop tracking them
+        for cmd in list(next_run):
+            if cmd not in COMMANDS:
+                del next_run[cmd]
+                log(f"{cmd} removed from config", YELLOW)
+
     print(f"\n{BOLD}{CYAN}─────────────────────────────────────────────────")
     print(f"  CALIBRATION")
     print(f"─────────────────────────────────────────────────{RESET}")

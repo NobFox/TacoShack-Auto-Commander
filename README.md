@@ -74,7 +74,7 @@ Everything is saved to `discord_auto_config.json` automatically. Next time you l
 
 ## Daily Use
 
-Launch the script via `tacoshack.bat`. The main display shows:
+Launch the script via `tacoshack.bat`. On startup there's a 10 second grace period before the first command fires (then the rest follow at 8 second intervals), and warning beeps are suppressed for the first 45 seconds — so a quiet window at launch is normal, not a hang. The main display shows:
 
 ```
 ────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ Launch the script via `tacoshack.bat`. The main display shows:
 The script is designed to run in the background while you work. When a command is due, it will:
 
 1. Switch to Discord
-2. Wait for a 2 second gap in your typing so it doesn't accidentally send half a sentence with your command on the end
+2. Wait for a 2 second gap in your typing so it doesn't interrupt you mid-sentence
 3. Clear the message box of anything that may have landed there
 4. Paste and send the command
 5. Return focus to whatever you were doing
@@ -148,9 +148,9 @@ All settings are stored in `discord_auto_config.json` in the same folder as the 
 | `taskbar` | Recorded taskbar icon coordinates (set by calibration) |
 | `msgbox` | Recorded message box coordinates (set by calibration) |
 
-**Adding a new command:** add it to the `commands` section with its cooldown in seconds, then restart the script.
+**Adding or removing a command:** edit the `commands` section, then press **C** in the script — new commands are picked up and scheduled with a full cooldown, and removed commands disappear from the display. No restart needed.
 
-**Changing cooldowns:** edit the values directly in the JSON, then press **C** in the script to recalibrate — this also reloads the config without restarting.
+**Changing cooldowns:** edit the values directly in the JSON, then press **C**. Any countdown currently running adjusts by the difference — e.g. if `/work` has 3 minutes left and you raise its cooldown from 360 to 540 seconds, the live countdown jumps to 6 minutes.
 
 ---
 
