@@ -117,46 +117,58 @@ def today_str() -> str:
     return datetime.now().strftime("%d/%m/%Y")
 
 
-def read_log() -> dict:
-    """Read logfile and return a dict of date -> {cmd: count}."""
-    entries = {}
+def read_log():
+    """Read logfile. Returns (entries, leftovers) where entries is a dict of
+    date -> {cmd: count} and leftovers is any line we couldn't parse —
+    kept so a stray line never gets silently deleted on the next write."""
+    entries, leftovers = {}, []
     if not os.path.exists(LOG_FILE):
-        return entries
+        return entries, leftovers
     with open(LOG_FILE, "r") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            # Format: DD/MM/YYYY - /tips:14 /work:5 /overtime:1
             try:
                 date_part, counts_part = line.split(" - ", 1)
                 counts = {}
-                for item in counts_part.split("\t"):
-                    cmd, val = item.strip().split(":")
+                # new format separates with |, older files used tabs — accept both
+                items = []
+                for chunk in counts_part.split("\t"):
+                    items.extend(chunk.split("|"))
+                for item in items:
+                    cmd, val = item.strip().rsplit(":", 1)  # split from the right — command names may contain colons
                     counts[cmd.strip()] = int(val.strip())
                 entries[date_part.strip()] = counts
             except Exception:
-                pass  # skip malformed lines
-    return entries
+                leftovers.append(line)  # keep it, don't lose it
+    return entries, leftovers
 
 
-def write_log(entries: dict):
-    """Write all log entries back to file, newest date first."""
+def write_log(entries: dict, leftovers=()):
+    """Write all log entries, newest date first, via an atomic replace so an
+    interrupted write can never leave a truncated/empty logfile."""
     lines = []
     for date, counts in entries.items():
-        counts_str = "\t".join(
-            f"{cmd.lstrip('/')}:{counts.get(cmd.lstrip('/'), 0)}" for cmd in COMMANDS
-        )
+        # historical rows keep exactly the counts they had — only today's
+        # row (rebuilt in update_log) tracks the current command list
+        counts_str = " | ".join(f"{cmd}:{n}" for cmd, n in counts.items())
         lines.append(f"{date} - {counts_str}")
-    lines.sort(key=lambda l: datetime.strptime(l[:10], "%d/%m/%Y"), reverse=True)
     try:
-        with open(LOG_FILE, "w") as f:
+        lines.sort(key=lambda l: datetime.strptime(l[:10], "%d/%m/%Y"), reverse=True)
+    except ValueError:
+        pass  # a weird date sneaked in — write unsorted rather than crash
+    lines.extend(leftovers)
+    tmp = LOG_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
             f.write("\n".join(lines) + "\n")
+        os.replace(tmp, LOG_FILE)  # atomic — old file intact until this succeeds
     except OSError:
         log("Logfile is locked — skipping write.", YELLOW)
 
 
-def update_log():
+def update_log(just_sent: str = None):
     """Update today's row in the logfile with current run_counts."""
     global current_log_date
     today = today_str()
@@ -166,18 +178,24 @@ def update_log():
         current_log_date = today
         for cmd in COMMANDS:
             run_counts[cmd] = 0
+        if just_sent:
+            run_counts[just_sent] = 1  # the send that crossed midnight counts for the new day
         log("Midnight rollover — counts reset for new day.", CYAN)
 
-    entries = read_log()
-    entries[today] = {cmd.lstrip('/'): run_counts.get(cmd, 0) for cmd in COMMANDS}
-    write_log(entries)
+    entries, leftovers = read_log()
+    # merge onto today's existing row: commands removed from the config
+    # mid-day keep the count they'd racked up rather than vanishing
+    today_row = entries.get(today, {})
+    today_row.update({cmd.lstrip('/'): run_counts.get(cmd, 0) for cmd in COMMANDS})
+    entries[today] = today_row
+    write_log(entries, leftovers)
 
 
 def load_todays_counts():
     """On startup, load today's existing counts into run_counts."""
     global current_log_date
     current_log_date = today_str()
-    entries = read_log()
+    entries, _ = read_log()
     if current_log_date in entries:
         for cmd, count in entries[current_log_date].items():
             full_cmd = f"/{cmd}" if not cmd.startswith("/") else cmd
@@ -362,10 +380,27 @@ def send_discord_command(command: str) -> bool:
         log(f"Sent {command}", GREEN)
 
         if previous_window:
-            try:
-                previous_window.activate()
-            except Exception:
-                pass
+            # SetForegroundWindow (what .activate() uses) is unreliable on
+            # Windows: the OS blocks background focus-stealing and sometimes
+            # throws even on success. Alt-tap grants foreground permission;
+            # retry and verify by window handle rather than trusting one shot.
+            for _ in range(3):
+                try:
+                    if previous_window.isMinimized:
+                        previous_window.restore()
+                    pyautogui.press("alt")
+                    previous_window.activate()
+                except Exception:
+                    pass
+                time.sleep(0.3)
+                try:
+                    active = gw.getActiveWindow()
+                    if active and active._hWnd == previous_window._hWnd:
+                        break
+                except Exception:
+                    break
+            else:
+                log("Couldn't return focus to previous window.", YELLOW)
 
         busy = False
         return True
@@ -405,7 +440,7 @@ def scheduler():
                     last_sent[cmd] = datetime.now()
                 if success:
                     run_counts[cmd] = run_counts.get(cmd, 0) + 1
-                    update_log()
+                    update_log(just_sent=cmd)
                     log(
                         f"{cmd} → next run in {cooldown//60}m + {extra}s "
                         f"(at {next_run[cmd].strftime('%H:%M:%S')})",

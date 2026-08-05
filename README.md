@@ -160,8 +160,8 @@ All settings are stored in `discord_auto_config.json` in the same folder as the 
 The script keeps a running log in `logfile.txt` in the same folder:
 
 ```
-29/07/2026 - tips:131	work:62	overtime:16
-28/07/2026 - tips:201	work:95	overtime:17
+29/07/2026 - tips:131 | work:62 | overtime:16
+28/07/2026 - tips:201 | work:95 | overtime:17
 ```
 
 - Counts are updated every time a command is successfully sent
