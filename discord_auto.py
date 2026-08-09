@@ -493,15 +493,22 @@ def display_loop():
         else:
             status = f"{GREEN}RUNNING — press P to pause{RESET}"
 
-        print(f"{BOLD}{CYAN}{'─'*52}")
+        # Size the name column to the longest command so long ones like
+        # "/buy upgrade:All Boosts" don't shunt the other columns out of line
+        with lock:
+            name_w = max([len("Command")] + [len(c) for c in COMMANDS])
+        table_w = 2 + name_w + 1 + 8 + 3 + 10   # indent + cols + gaps
+        rule_w  = max(57, table_w)              # 57 = width of the uptime/hotkey line
+
+        print(f"{BOLD}{CYAN}{'─'*rule_w}")
         print(f"  TacoShack Auto-Commander  |  Close window to stop")
-        print(f"{'─'*52}{RESET}")
+        print(f"{'─'*rule_w}{RESET}")
         print(f"  {status}")
         beep_status = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
         print(f"  Uptime: {format_uptime()}   |   C recalibrate   |   B beeps: {beep_status}")
         print()
-        print(f"  {'Command':<14} {'Next in':>8}   {'Last sent':<10}")
-        print(f"  {'─'*13} {'─'*8}   {'─'*10}")
+        print(f"  {'Command':<{name_w}} {'Next in':>8}   {'Last sent':<10}")
+        print(f"  {'─'*name_w} {'─'*8}   {'─'*10}")
 
         now = datetime.now()
         with lock:
@@ -532,11 +539,31 @@ def display_loop():
                         colour = GREEN
                         beeped_for.discard(cmd)
                 sent_str = sent_at.strftime("%H:%M:%S") if sent_at else "not yet"
-                print(f"  {colour}{cmd:<14}{RESET} {countdown:>8}   {sent_str:<10}")
+                print(f"  {colour}{cmd:<{name_w}}{RESET} {countdown:>8}   {sent_str:<10}")
 
         with lock:
-            parts = [f"{cmd.lstrip('/')} ×{run_counts.get(cmd, 0):<3}" for cmd in COMMANDS]
-        print(f"\n  Sent:   {'   |   '.join(parts)}\n")
+            parts = [f"{cmd.lstrip('/')} ×{run_counts.get(cmd, 0)}" for cmd in COMMANDS]
+
+        # Wrap at entry boundaries so a long name never gets split across
+        # lines; continuation rows indent to sit under the first entry
+        label   = "  Sent:   "
+        indent  = " " * len(label)
+        sep     = "  |  "
+        lines, current = [], ""
+        for part in parts:
+            candidate = part if not current else current + sep + part
+            if current and len(label) + len(candidate) > rule_w:
+                lines.append(current)
+                current = part
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+
+        print()
+        for i, line in enumerate(lines):
+            print(f"{label if i == 0 else indent}{line}")
+        print()
         time.sleep(1)
 
 
