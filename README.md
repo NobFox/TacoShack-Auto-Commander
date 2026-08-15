@@ -77,12 +77,11 @@ Everything is saved to `discord_auto_config.json` automatically. Next time you l
 Launch the script via `tacoshack.bat`. On startup there's a 10 second grace period before the first command fires (then the rest follow at 8 second intervals), and warning beeps are suppressed for the first 45 seconds — so a quiet window at launch is normal, not a hang. The main display shows:
 
 ```
-─────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────
   TacoShack Auto-Commander  |  Close window to stop
-─────────────────────────────────────────────────────────
-  RUNNING — press P to pause
-  Uptime: 01:23:45   |   C recalibrate   |   B beeps: on
-  T adjust a timer
+──────────────────────────────────────────────────────────────────────────
+  RUNNING
+  Uptime: 01:23:45
 
      Command      Next in   Last sent
      ─────────── ────────   ──────────
@@ -92,9 +91,12 @@ Launch the script via `tacoshack.bat`. On startup there's a 10 second grace peri
   4. /daily      22:38:40   14:57:44
 
   Sent:   tips ×14  |  work ×6  |  overtime ×1  |  daily ×1
+
+──────────────────────────────────────────────────────────────────────────
+  P pause   T adjust timer   E edit cooldown   C recalibrate   B beeps: on
 ```
 
-The table sizes itself to your longest command name, so adding something like `/buy upgrade:All Boosts` keeps everything lined up. Countdowns over an hour are shown as `hh:mm:ss`.
+The table sizes itself to your longest command name, so adding something like `/buy upgrade:All Boosts` keeps everything lined up. Countdowns over an hour are shown as `hh:mm:ss`. All available hotkeys are listed along the bar at the bottom, with the current beep state shown there.
 
 **Colour coding:**
 - 🟢 **Green** — more than 30 seconds until next run
@@ -105,16 +107,19 @@ The table sizes itself to your longest command name, so adding something like `/
 - **P** — pause or resume all commands
 - **B** — toggle warning beeps on/off (for unattended mode)
 - **T** — adjust a running timer as a one-off (see below)
+- **E** — change a command's cooldown and save it to the config (see below)
 - **C** — pause and recalibrate mouse positions (useful if you've resized or moved Discord)
 - **Close the window** — stops the script
 
 ---
 
-## Adjusting a Timer
+## Adjusting Timers and Cooldowns
+
+There are two ways to change when a command fires, depending on whether the problem is with *this run* or with the cooldown itself. Both show a numbered list matching the numbers in the main table, both take minutes (including decimals like `3.5`) and do the seconds conversion for you, and both cancel with nothing changed if you press Enter on its own.
+
+### T — adjust a running timer (one-off)
 
 If a command doesn't land — say `/overtime` misfires and you only notice five minutes later, then send it manually — the script's countdown is now out of step with the real cooldown. Press **T** to nudge it back into line.
-
-You'll get a numbered list matching the numbers already shown in the main table:
 
 ```
   Adjust a running timer  (one-off — config is not changed)
@@ -129,13 +134,35 @@ You'll get a numbered list matching the numbers already shown in the main table:
   Adjust /overtime by how many minutes? (e.g. +5 or -5): +5
 ```
 
-- Enter a positive number to push the next run further away, or a negative one to bring it forward
-- Minutes are converted to seconds for you
-- The change is a **one-off** — the cooldown in your config is untouched, so the run after that one goes back to normal
-- If you subtract more time than is remaining, the command is simply due immediately and fires shortly
-- Pressing Enter on its own at either prompt cancels with nothing changed
+- Positive pushes the next run further away, negative brings it forward
+- The change is a **one-off** — your config is untouched, so the run after that one goes back to normal
+- Subtract more time than is remaining and the command is simply due immediately, firing shortly after you exit
 
-Commands are paused while the prompt is open, so nothing fires underneath you while you're deciding.
+### E — edit a cooldown (permanent)
+
+If the cooldown itself is wrong, press **E**. This saves to `discord_auto_config.json` for you, so there's no need to edit the file by hand or work out how many seconds are in 3.5 minutes.
+
+```
+  Edit a cooldown  (saved to config)
+
+    1. /tips       2m cooldown
+    2. /work       6m cooldown
+    3. /overtime   30m cooldown
+
+  Press Enter on its own at any point to cancel.
+
+  Which command? (number): 2
+  New cooldown for /work in minutes (currently 6m): 3.5
+
+  /work: 6m → 3.5m (210s), saved to config.
+  Running countdown adjusted — now 00:23 remaining.
+```
+
+- The new value is written to the config immediately — no restart needed
+- The countdown already running is shifted by the difference, so the change takes effect straight away rather than from the next cycle
+- To **add or remove** commands rather than retime them, edit the `commands` section of the config and press **C**
+
+While either prompt is open, commands are paused and nothing fires underneath you. If a command happens to be mid-send when you press the key, the prompt waits for it to finish first.
 
 ---
 
@@ -185,7 +212,7 @@ All settings are stored in `discord_auto_config.json` in the same folder as the 
 
 **Adding or removing a command:** edit the `commands` section, then press **C** in the script — new commands are picked up and scheduled with a full cooldown, and removed commands disappear from the display. No restart needed.
 
-**Changing cooldowns:** edit the values directly in the JSON, then press **C**. Any countdown currently running adjusts by the difference — e.g. if `/work` has 3 minutes left and you raise its cooldown from 360 to 540 seconds, the live countdown jumps to 6 minutes.
+**Changing cooldowns:** easiest done with **E** in the script — it takes minutes, converts to seconds, saves the config and adjusts the running countdown for you. If you'd rather edit the JSON directly you still can: change the values, then press **C**, and any countdown currently running adjusts by the difference — e.g. if `/work` has 3 minutes left and you raise its cooldown from 360 to 540 seconds, the live countdown jumps to 6 minutes.
 
 ---
 

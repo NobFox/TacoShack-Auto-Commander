@@ -53,6 +53,7 @@ beeps_enabled = True
 busy        = False
 calibrating = False
 adjusting   = False
+pending_logs = []   # log lines held back while a prompt is on screen
 start_time  = None
 beeped_for  = set()
 last_keypress_time = 0.0
@@ -106,8 +107,10 @@ def save_config():
         "taskbar":            list(discord_taskbar_pos) if discord_taskbar_pos else None,
         "msgbox":             list(discord_msgbox_pos)  if discord_msgbox_pos  else None,
     }
-    with open(CONFIG_FILE, "w") as f:
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)  # atomic — never leaves a half-written config
 
 
 # ─────────────────────────────────────────────
@@ -209,8 +212,23 @@ def load_todays_counts():
 # ─────────────────────────────────────────────
 
 def log(msg: str, colour: str = RESET):
-    ts = datetime.now().strftime("%H:%M:%S")
-    print(f"{colour}[{ts}] {msg}{RESET}")
+    ts   = datetime.now().strftime("%H:%M:%S")
+    line = f"{colour}[{ts}] {msg}{RESET}"
+    # A prompt is on screen — hold the line rather than scribbling over
+    # what the user is typing. Flushed when the prompt closes.
+    if adjusting:
+        pending_logs.append(line)
+        return
+    print(line)
+
+
+def flush_pending_logs():
+    """Print anything logged while a prompt was open."""
+    if not pending_logs:
+        return
+    for line in pending_logs:
+        print(line)
+    pending_logs.clear()
 
 
 def random_delay() -> int:
@@ -418,7 +436,7 @@ def send_discord_command(command: str) -> bool:
 
 def scheduler():
     while True:
-        if not paused and not calibrating:
+        if not paused and not calibrating and not adjusting:
             if not check_discord_open():
                 log("Discord not found — commands paused until it's open.", YELLOW)
                 while not check_discord_open():
@@ -454,35 +472,49 @@ def scheduler():
 #  KEY LISTENER
 # ─────────────────────────────────────────────
 
-def adjust_timer():
-    """One-off nudge to a running countdown. Doesn't touch the config —
-    the cooldown is unchanged, only the next scheduled run moves."""
+def prompt_header(title: str):
+    # A send may already be in flight — let it finish before we draw,
+    # otherwise it steals focus and logs over the prompt
+    if busy:
+        os.system("cls")
+        print(f"\n  {YELLOW}Waiting for a command in progress to finish...{RESET}")
+        while busy:
+            time.sleep(0.2)
     os.system("cls")
     print(f"{BOLD}{CYAN}{'─'*57}")
-    print("  Adjust a running timer  (one-off — config is not changed)")
+    print(f"  {title}")
     print(f"{'─'*57}{RESET}\n")
 
+
+def pick_command(show: str = "remaining"):
+    """Show the numbered command list and return the chosen command,
+    or None if cancelled / bad input. `show` picks the right-hand column."""
     with lock:
-        cmds = list(COMMANDS)
+        cmds     = list(COMMANDS)
         snapshot = {c: next_run.get(c) for c in cmds}
+        cooldowns = dict(COMMANDS)
 
     if not cmds:
         print(f"  {YELLOW}No commands configured.{RESET}")
         time.sleep(2)
-        return
+        return None
 
     now    = datetime.now()
     name_w = max(len(c) for c in cmds)
     for i, cmd in enumerate(cmds, 1):
-        run_at = snapshot.get(cmd)
-        left   = format_countdown((run_at - now).total_seconds()) if run_at else "--:--"
-        print(f"    {i}. {cmd:<{name_w}}   {left:>8} remaining")
+        if show == "cooldown":
+            mins  = cooldowns[cmd] / 60
+            right = f"{mins:g}m cooldown"
+        else:
+            run_at = snapshot.get(cmd)
+            right  = (format_countdown((run_at - now).total_seconds()) if run_at else "--:--") + " remaining"
+        print(f"    {i}. {cmd:<{name_w}}   {right}")
 
     print(f"\n  {YELLOW}Press Enter on its own at any point to cancel.{RESET}\n")
 
     raw = input("  Which command? (number): ").strip()
     if not raw:
-        return
+        return None
     try:
         choice = int(raw)
         if not 1 <= choice <= len(cmds):
@@ -490,8 +522,71 @@ def adjust_timer():
     except ValueError:
         print(f"  {RED}Not a valid number from the list.{RESET}")
         time.sleep(2)
+        return None
+    return cmds[choice - 1]
+
+
+def edit_cooldown():
+    """Change a command's cooldown permanently — updates the JSON config
+    and shifts the running countdown by the difference."""
+    prompt_header("Edit a cooldown  (saved to config)")
+
+    cmd = pick_command(show="cooldown")
+    if not cmd:
         return
-    cmd = cmds[choice - 1]
+
+    with lock:
+        old_secs = COMMANDS[cmd]
+    old_mins = old_secs / 60
+
+    raw = input(f"  New cooldown for {cmd} in minutes (currently {old_mins:g}m): ").strip()
+    if not raw:
+        return
+    try:
+        new_mins = float(raw)
+        if new_mins <= 0:
+            raise ValueError
+    except ValueError:
+        print(f"  {RED}Enter a number greater than 0, e.g. 3.5{RESET}")
+        time.sleep(2)
+        return
+
+    new_secs = int(round(new_mins * 60))
+    delta    = new_secs - old_secs
+
+    with lock:
+        COMMANDS[cmd] = new_secs
+        # shift the in-flight countdown by the difference, same as pressing C
+        if cmd in next_run:
+            now = datetime.now()
+            next_run[cmd] = max(now, next_run[cmd] + timedelta(seconds=delta))
+            left = format_countdown((next_run[cmd] - now).total_seconds())
+        else:
+            left = None
+
+    try:
+        save_config()
+    except OSError as e:
+        print(f"\n  {RED}Couldn't save config: {e}{RESET}")
+        time.sleep(3)
+        return
+
+    beeped_for.discard(cmd)
+    print(f"\n  {GREEN}{cmd}: {old_mins:g}m → {new_mins:g}m ({new_secs}s), saved to config.{RESET}")
+    if left:
+        print(f"  {GREEN}Running countdown adjusted — now {left} remaining.{RESET}")
+    log(f"{cmd} cooldown changed to {new_mins:g}m and saved", CYAN)
+    time.sleep(2.5)
+
+
+def adjust_timer():
+    """One-off nudge to a running countdown. Doesn't touch the config —
+    the cooldown is unchanged, only the next scheduled run moves."""
+    prompt_header("Adjust a running timer  (one-off — config is not changed)")
+
+    cmd = pick_command(show="remaining")
+    if not cmd:
+        return
 
     raw = input(f"  Adjust {cmd} by how many minutes? (e.g. +5 or -5): ").strip()
     if not raw:
@@ -534,12 +629,15 @@ def key_listener():
                 paused = not paused
             elif key == 'b':
                 beeps_enabled = not beeps_enabled
-            elif key == 't' and not calibrating and not adjusting:
+            elif key in ('t', 'e') and not calibrating and not adjusting:
                 adjusting = True
                 try:
-                    adjust_timer()
+                    adjust_timer() if key == 't' else edit_cooldown()
                 finally:
                     adjusting = False
+                    while msvcrt.kbhit():   # drop anything typed at the prompt
+                        msvcrt.getwch()
+                    flush_pending_logs()
             elif key == 'c' and not calibrating:
                 calibrating = True
                 paused_before = paused
@@ -567,24 +665,22 @@ def display_loop():
         if not discord_open:
             status = f"{RED}DISCORD CLOSED — waiting for Discord to open{RESET}"
         elif paused:
-            status = f"{YELLOW}PAUSED — press P to resume{RESET}"
+            status = f"{YELLOW}PAUSED{RESET}"
         else:
-            status = f"{GREEN}RUNNING — press P to pause{RESET}"
+            status = f"{GREEN}RUNNING{RESET}"
 
         # Size the name column to the longest command so long ones like
         # "/buy upgrade:All Boosts" don't shunt the other columns out of line
         with lock:
             name_w = max([len("Command")] + [len(c) for c in COMMANDS])
         table_w = 2 + 3 + name_w + 1 + 8 + 3 + 10   # indent + index + cols + gaps
-        rule_w  = max(57, table_w)                  # 57 = width of the uptime/hotkey line
+        rule_w  = max(74, table_w)                  # 74 = width of the hotkey bar
 
         print(f"{BOLD}{CYAN}{'─'*rule_w}")
         print(f"  TacoShack Auto-Commander  |  Close window to stop")
         print(f"{'─'*rule_w}{RESET}")
         print(f"  {status}")
-        beep_status = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
-        print(f"  Uptime: {format_uptime()}   |   C recalibrate   |   B beeps: {beep_status}")
-        print(f"  T adjust a timer")
+        print(f"  Uptime: {format_uptime()}")
         print()
         print(f"  {'':<3}{'Command':<{name_w}} {'Next in':>8}   {'Last sent':<10}")
         print(f"  {'':<3}{'─'*name_w} {'─'*8}   {'─'*10}")
@@ -642,6 +738,14 @@ def display_loop():
         print()
         for i, line in enumerate(lines):
             print(f"{label if i == 0 else indent}{line}")
+
+        # Hotkey bar
+        beep_state = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
+        pause_lbl  = "resume" if paused else "pause"
+        print(f"\n{CYAN}{'─'*rule_w}{RESET}")
+        print(f"  {BOLD}P{RESET} {pause_lbl}   {BOLD}T{RESET} adjust timer   "
+              f"{BOLD}E{RESET} edit cooldown   {BOLD}C{RESET} recalibrate   "
+              f"{BOLD}B{RESET} beeps: {beep_state}")
         print()
         time.sleep(1)
 
