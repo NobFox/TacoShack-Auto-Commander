@@ -52,6 +52,7 @@ paused      = False
 beeps_enabled = True
 busy        = False
 calibrating = False
+adjusting   = False
 start_time  = None
 beeped_for  = set()
 last_keypress_time = 0.0
@@ -453,8 +454,79 @@ def scheduler():
 #  KEY LISTENER
 # ─────────────────────────────────────────────
 
+def adjust_timer():
+    """One-off nudge to a running countdown. Doesn't touch the config —
+    the cooldown is unchanged, only the next scheduled run moves."""
+    os.system("cls")
+    print(f"{BOLD}{CYAN}{'─'*57}")
+    print("  Adjust a running timer  (one-off — config is not changed)")
+    print(f"{'─'*57}{RESET}\n")
+
+    with lock:
+        cmds = list(COMMANDS)
+        snapshot = {c: next_run.get(c) for c in cmds}
+
+    if not cmds:
+        print(f"  {YELLOW}No commands configured.{RESET}")
+        time.sleep(2)
+        return
+
+    now    = datetime.now()
+    name_w = max(len(c) for c in cmds)
+    for i, cmd in enumerate(cmds, 1):
+        run_at = snapshot.get(cmd)
+        left   = format_countdown((run_at - now).total_seconds()) if run_at else "--:--"
+        print(f"    {i}. {cmd:<{name_w}}   {left:>8} remaining")
+
+    print(f"\n  {YELLOW}Press Enter on its own at any point to cancel.{RESET}\n")
+
+    raw = input("  Which command? (number): ").strip()
+    if not raw:
+        return
+    try:
+        choice = int(raw)
+        if not 1 <= choice <= len(cmds):
+            raise ValueError
+    except ValueError:
+        print(f"  {RED}Not a valid number from the list.{RESET}")
+        time.sleep(2)
+        return
+    cmd = cmds[choice - 1]
+
+    raw = input(f"  Adjust {cmd} by how many minutes? (e.g. +5 or -5): ").strip()
+    if not raw:
+        return
+    try:
+        mins = float(raw.lstrip("+"))
+    except ValueError:
+        print(f"  {RED}Enter a number like +5 or -5.{RESET}")
+        time.sleep(2)
+        return
+
+    with lock:
+        run_at = next_run.get(cmd)
+        if not run_at:
+            print(f"  {YELLOW}{cmd} isn't currently scheduled.{RESET}")
+            time.sleep(2)
+            return
+        now      = datetime.now()
+        adjusted = run_at + timedelta(seconds=mins * 60)
+        clamped  = adjusted < now
+        next_run[cmd] = max(now, adjusted)
+        left = format_countdown((next_run[cmd] - now).total_seconds())
+
+    beeped_for.discard(cmd)  # let it warn again against the new time
+    sign = "+" if mins >= 0 else ""
+    if clamped:
+        print(f"\n  {YELLOW}{cmd} {sign}{mins:g}m — that's past due, so it will fire shortly.{RESET}")
+    else:
+        print(f"\n  {GREEN}{cmd} {sign}{mins:g}m — now {left} remaining.{RESET}")
+    log(f"{cmd} timer adjusted by {sign}{mins:g}m (one-off)", CYAN)
+    time.sleep(2)
+
+
 def key_listener():
-    global paused, calibrating, beeps_enabled
+    global paused, calibrating, beeps_enabled, adjusting
     while True:
         if msvcrt.kbhit():
             key = msvcrt.getwch().lower()
@@ -462,6 +534,12 @@ def key_listener():
                 paused = not paused
             elif key == 'b':
                 beeps_enabled = not beeps_enabled
+            elif key == 't' and not calibrating and not adjusting:
+                adjusting = True
+                try:
+                    adjust_timer()
+                finally:
+                    adjusting = False
             elif key == 'c' and not calibrating:
                 calibrating = True
                 paused_before = paused
@@ -478,7 +556,7 @@ def key_listener():
 
 def display_loop():
     while True:
-        if calibrating:
+        if calibrating or adjusting:
             time.sleep(1)
             continue
 
@@ -497,8 +575,8 @@ def display_loop():
         # "/buy upgrade:All Boosts" don't shunt the other columns out of line
         with lock:
             name_w = max([len("Command")] + [len(c) for c in COMMANDS])
-        table_w = 2 + name_w + 1 + 8 + 3 + 10   # indent + cols + gaps
-        rule_w  = max(57, table_w)              # 57 = width of the uptime/hotkey line
+        table_w = 2 + 3 + name_w + 1 + 8 + 3 + 10   # indent + index + cols + gaps
+        rule_w  = max(57, table_w)                  # 57 = width of the uptime/hotkey line
 
         print(f"{BOLD}{CYAN}{'─'*rule_w}")
         print(f"  TacoShack Auto-Commander  |  Close window to stop")
@@ -506,13 +584,14 @@ def display_loop():
         print(f"  {status}")
         beep_status = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
         print(f"  Uptime: {format_uptime()}   |   C recalibrate   |   B beeps: {beep_status}")
+        print(f"  T adjust a timer")
         print()
-        print(f"  {'Command':<{name_w}} {'Next in':>8}   {'Last sent':<10}")
-        print(f"  {'─'*name_w} {'─'*8}   {'─'*10}")
+        print(f"  {'':<3}{'Command':<{name_w}} {'Next in':>8}   {'Last sent':<10}")
+        print(f"  {'':<3}{'─'*name_w} {'─'*8}   {'─'*10}")
 
         now = datetime.now()
         with lock:
-            for cmd in COMMANDS:
+            for idx, cmd in enumerate(COMMANDS, 1):
                 run_at  = next_run.get(cmd)
                 sent_at = last_sent.get(cmd)
                 if paused or not discord_open:
@@ -539,7 +618,7 @@ def display_loop():
                         colour = GREEN
                         beeped_for.discard(cmd)
                 sent_str = sent_at.strftime("%H:%M:%S") if sent_at else "not yet"
-                print(f"  {colour}{cmd:<{name_w}}{RESET} {countdown:>8}   {sent_str:<10}")
+                print(f"  {str(idx)+'.':<3}{colour}{cmd:<{name_w}}{RESET} {countdown:>8}   {sent_str:<10}")
 
         with lock:
             parts = [f"{cmd.lstrip('/')} ×{run_counts.get(cmd, 0)}" for cmd in COMMANDS]

@@ -77,20 +77,24 @@ Everything is saved to `discord_auto_config.json` automatically. Next time you l
 Launch the script via `tacoshack.bat`. On startup there's a 10 second grace period before the first command fires (then the rest follow at 8 second intervals), and warning beeps are suppressed for the first 45 seconds — so a quiet window at launch is normal, not a hang. The main display shows:
 
 ```
-────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────
   TacoShack Auto-Commander  |  Close window to stop
-────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────
   RUNNING — press P to pause
-  Uptime: 01:23:45   |   Press C to recalibrate
+  Uptime: 01:23:45   |   C recalibrate   |   B beeps: on
+  T adjust a timer
 
-  Command        Next in   Last sent
-  ─────────────  ────────  ──────────
-  /tips           01:47    15:32:01
-  /work           04:12    15:29:45
-  /overtime       22:08    15:10:02
+     Command      Next in   Last sent
+     ─────────── ────────   ──────────
+  1. /tips          01:47   15:32:01
+  2. /work          04:12   15:29:45
+  3. /overtime      22:08   15:10:02
+  4. /daily      22:38:40   14:57:44
 
-  Sent:   tips ×14   |   work ×6   |   overtime ×1
+  Sent:   tips ×14  |  work ×6  |  overtime ×1  |  daily ×1
 ```
+
+The table sizes itself to your longest command name, so adding something like `/buy upgrade:All Boosts` keeps everything lined up. Countdowns over an hour are shown as `hh:mm:ss`.
 
 **Colour coding:**
 - 🟢 **Green** — more than 30 seconds until next run
@@ -100,8 +104,38 @@ Launch the script via `tacoshack.bat`. On startup there's a 10 second grace peri
 **Keyboard shortcuts:**
 - **P** — pause or resume all commands
 - **B** — toggle warning beeps on/off (for unattended mode)
+- **T** — adjust a running timer as a one-off (see below)
 - **C** — pause and recalibrate mouse positions (useful if you've resized or moved Discord)
 - **Close the window** — stops the script
+
+---
+
+## Adjusting a Timer
+
+If a command doesn't land — say `/overtime` misfires and you only notice five minutes later, then send it manually — the script's countdown is now out of step with the real cooldown. Press **T** to nudge it back into line.
+
+You'll get a numbered list matching the numbers already shown in the main table:
+
+```
+  Adjust a running timer  (one-off — config is not changed)
+
+    1. /tips        01:47 remaining
+    2. /work        04:12 remaining
+    3. /overtime    22:08 remaining
+
+  Press Enter on its own at any point to cancel.
+
+  Which command? (number): 3
+  Adjust /overtime by how many minutes? (e.g. +5 or -5): +5
+```
+
+- Enter a positive number to push the next run further away, or a negative one to bring it forward
+- Minutes are converted to seconds for you
+- The change is a **one-off** — the cooldown in your config is untouched, so the run after that one goes back to normal
+- If you subtract more time than is remaining, the command is simply due immediately and fires shortly
+- Pressing Enter on its own at either prompt cancels with nothing changed
+
+Commands are paused while the prompt is open, so nothing fires underneath you while you're deciding.
 
 ---
 
