@@ -30,6 +30,14 @@ DEFAULTS = {
     },
     "taskbar": None,
     "msgbox":  None,
+    "sleepy_mode":  False,
+    "sleep_start":  "00:00",
+    "sleep_end":    "07:30",
+    "lazy_mode":       False,
+    "lazy_work_min":   60,
+    "lazy_work_max":   120,
+    "lazy_break_min":  30,
+    "lazy_break_max":  60,
 }
 
 # ─────────────────────────────────────────────
@@ -54,6 +62,8 @@ busy        = False
 calibrating = False
 adjusting   = False
 pending_logs = []   # log lines held back while a prompt is on screen
+lazy_break_until = None   # set while a lazy break is in progress
+lazy_next_break  = None   # when the next lazy break is due
 start_time  = None
 beeped_for  = set()
 last_keypress_time = 0.0
@@ -73,9 +83,60 @@ discord_msgbox_pos  = None
 #  CONFIG FILE
 # ─────────────────────────────────────────────
 
+def parse_hhmm(value, fallback):
+    """'07:30' -> (7, 30). Falls back if the config has something daft in it."""
+    try:
+        h, m = str(value).split(":")
+        h, m = int(h), int(m)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError
+        return (h, m)
+    except (ValueError, AttributeError):
+        h, m = str(fallback).split(":")
+        return (int(h), int(m))
+
+
+def in_sleep_window(now: datetime = None) -> bool:
+    """True if the clock is inside the sleep window. Handles windows that
+    cross midnight (e.g. 23:00-07:30) as well as ones that don't."""
+    now  = now or datetime.now()
+    mins = now.hour * 60 + now.minute
+    start = SLEEP_START[0] * 60 + SLEEP_START[1]
+    end   = SLEEP_END[0]   * 60 + SLEEP_END[1]
+    if start == end:
+        return False                      # zero-length window, never sleeps
+    if start < end:
+        return start <= mins < end        # same-day window
+    return mins >= start or mins < end    # crosses midnight
+
+
+def sleep_until() -> datetime:
+    """When the current sleep window ends."""
+    now    = datetime.now()
+    target = now.replace(hour=SLEEP_END[0], minute=SLEEP_END[1], second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+def sane_range(data, min_key, max_key):
+    """Read a min/max pair of minutes, falling back on junk and swapping
+    them if they're the wrong way round."""
+    try:
+        lo = float(data[min_key])
+        hi = float(data[max_key])
+        if lo <= 0 or hi <= 0:
+            raise ValueError
+        return (min(lo, hi), max(lo, hi))
+    except (ValueError, TypeError, KeyError):
+        return (float(DEFAULTS[min_key]), float(DEFAULTS[max_key]))
+
+
 def load_config():
     global RANDOM_EXTRA_MIN, RANDOM_EXTRA_MAX, TASKBAR_HOVER_TIME, MSGBOX_HOVER_TIME, COMMANDS
     global discord_taskbar_pos, discord_msgbox_pos
+    global sleepy_mode, SLEEP_START, SLEEP_END
+    global lazy_mode, LAZY_WORK_MIN, LAZY_WORK_MAX, LAZY_BREAK_MIN, LAZY_BREAK_MAX
 
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -94,6 +155,14 @@ def load_config():
     discord_taskbar_pos = tuple(data["taskbar"]) if data["taskbar"] else None
     discord_msgbox_pos  = tuple(data["msgbox"])  if data["msgbox"]  else None
 
+    sleepy_mode = bool(data["sleepy_mode"])
+    SLEEP_START = parse_hhmm(data["sleep_start"], DEFAULTS["sleep_start"])
+    SLEEP_END   = parse_hhmm(data["sleep_end"],   DEFAULTS["sleep_end"])
+
+    lazy_mode = bool(data["lazy_mode"])
+    LAZY_WORK_MIN, LAZY_WORK_MAX   = sane_range(data, "lazy_work_min",  "lazy_work_max")
+    LAZY_BREAK_MIN, LAZY_BREAK_MAX = sane_range(data, "lazy_break_min", "lazy_break_max")
+
     return data
 
 
@@ -106,6 +175,14 @@ def save_config():
         "commands":           COMMANDS,
         "taskbar":            list(discord_taskbar_pos) if discord_taskbar_pos else None,
         "msgbox":             list(discord_msgbox_pos)  if discord_msgbox_pos  else None,
+        "sleepy_mode":        sleepy_mode,
+        "sleep_start":        f"{SLEEP_START[0]:02d}:{SLEEP_START[1]:02d}",
+        "sleep_end":          f"{SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}",
+        "lazy_mode":          lazy_mode,
+        "lazy_work_min":      LAZY_WORK_MIN,
+        "lazy_work_max":      LAZY_WORK_MAX,
+        "lazy_break_min":     LAZY_BREAK_MIN,
+        "lazy_break_max":     LAZY_BREAK_MAX,
     }
     tmp = CONFIG_FILE + ".tmp"
     with open(tmp, "w") as f:
@@ -434,9 +511,58 @@ def send_discord_command(command: str) -> bool:
 #  SCHEDULER
 # ─────────────────────────────────────────────
 
+def restagger_overdue(reason: str):
+    """Everything that went overdue while we were paused gets spread out
+    rather than firing in the same second when we resume."""
+    with lock:
+        now     = datetime.now()
+        overdue = [c for c in COMMANDS if next_run.get(c) and next_run[c] <= now]
+        for i, cmd in enumerate(overdue):
+            next_run[cmd] = now + timedelta(seconds=10 + i * 8)
+            beeped_for.discard(cmd)
+    log(f"{reason} — {len(overdue)} command(s) restaggered.", GREEN)
+
+
 def scheduler():
+    global lazy_break_until, lazy_next_break
+    was_sleeping = False
     while True:
-        if not paused and not calibrating and not adjusting:
+        now      = datetime.now()
+        sleeping = sleepy_mode and in_sleep_window(now)
+
+        if sleeping and not was_sleeping:
+            log(f"Sleepy mode — pausing until {SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}.", CYAN)
+        elif was_sleeping and not sleeping:
+            restagger_overdue("Sleepy mode over")
+        was_sleeping = sleeping
+
+        # ── Lazy mode ────────────────────────────────────────────
+        on_break = False
+        if not lazy_mode:
+            lazy_break_until = lazy_next_break = None
+        elif sleeping:
+            # Don't burn the lazy clock overnight, and don't wake up
+            # straight into a break — start the cycle fresh after sleeping
+            lazy_break_until = None
+            lazy_next_break  = None
+        elif lazy_break_until:
+            if now < lazy_break_until:
+                on_break = True
+            else:
+                lazy_break_until = None
+                lazy_next_break  = now + timedelta(minutes=random.uniform(LAZY_WORK_MIN, LAZY_WORK_MAX))
+                restagger_overdue("Lazy break over")
+                log(f"Next lazy break at {lazy_next_break.strftime('%H:%M')}.", CYAN)
+        elif lazy_next_break is None:
+            lazy_next_break = now + timedelta(minutes=random.uniform(LAZY_WORK_MIN, LAZY_WORK_MAX))
+            log(f"Lazy mode — first break at {lazy_next_break.strftime('%H:%M')}.", CYAN)
+        elif now >= lazy_next_break:
+            mins = random.uniform(LAZY_BREAK_MIN, LAZY_BREAK_MAX)
+            lazy_break_until = now + timedelta(minutes=mins)
+            on_break = True
+            log(f"Lazy break for {mins:.0f}m — back at {lazy_break_until.strftime('%H:%M')}.", CYAN)
+
+        if not paused and not calibrating and not adjusting and not sleeping and not on_break:
             if not check_discord_open():
                 log("Discord not found — commands paused until it's open.", YELLOW)
                 while not check_discord_open():
@@ -621,7 +747,8 @@ def adjust_timer():
 
 
 def key_listener():
-    global paused, calibrating, beeps_enabled, adjusting
+    global paused, calibrating, beeps_enabled, adjusting, sleepy_mode
+    global lazy_mode, lazy_break_until, lazy_next_break
     while True:
         if msvcrt.kbhit():
             key = msvcrt.getwch().lower()
@@ -629,6 +756,22 @@ def key_listener():
                 paused = not paused
             elif key == 'b':
                 beeps_enabled = not beeps_enabled
+            elif key == 'l':
+                lazy_mode = not lazy_mode
+                if not lazy_mode and lazy_break_until:
+                    lazy_break_until = None   # switching off ends a break now
+                    restagger_overdue("Lazy mode off")
+                lazy_next_break = None        # cycle restarts either way
+                try:
+                    save_config()
+                except OSError:
+                    log("Lazy mode toggled but couldn't save config.", YELLOW)
+            elif key == 's':
+                sleepy_mode = not sleepy_mode
+                try:
+                    save_config()   # remembered next launch — the whole point
+                except OSError:
+                    log("Sleepy mode toggled but couldn't save config.", YELLOW)
             elif key in ('t', 'e') and not calibrating and not adjusting:
                 adjusting = True
                 try:
@@ -666,6 +809,13 @@ def display_loop():
             status = f"{RED}DISCORD CLOSED — waiting for Discord to open{RESET}"
         elif paused:
             status = f"{YELLOW}PAUSED{RESET}"
+        elif sleepy_mode and in_sleep_window():
+            wake = sleep_until()
+            left = format_countdown((wake - datetime.now()).total_seconds())
+            status = f"{CYAN}SLEEPING — resumes at {wake.strftime('%H:%M')} (in {left}){RESET}"
+        elif lazy_break_until:
+            left = format_countdown((lazy_break_until - datetime.now()).total_seconds())
+            status = f"{CYAN}LAZY BREAK — resumes at {lazy_break_until.strftime('%H:%M')} (in {left}){RESET}"
         else:
             status = f"{GREEN}RUNNING{RESET}"
 
@@ -740,12 +890,21 @@ def display_loop():
             print(f"{label if i == 0 else indent}{line}")
 
         # Hotkey bar
-        beep_state = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
-        pause_lbl  = "resume" if paused else "pause"
+        beep_state  = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
+        sleep_win   = f"{SLEEP_START[0]:02d}:{SLEEP_START[1]:02d}-{SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}"
+        sleep_state = f"{GREEN}on{RESET} {sleep_win}" if sleepy_mode else f"{YELLOW}off{RESET}"
+        if lazy_mode and lazy_next_break and not lazy_break_until:
+            lazy_state = f"{GREEN}on{RESET} (break at {lazy_next_break.strftime('%H:%M')})"
+        elif lazy_mode:
+            lazy_state = f"{GREEN}on{RESET}"
+        else:
+            lazy_state = f"{YELLOW}off{RESET}"
+        pause_lbl   = "resume" if paused else "pause"
         print(f"\n{CYAN}{'─'*rule_w}{RESET}")
         print(f"  {BOLD}P{RESET} {pause_lbl}   {BOLD}T{RESET} adjust timer   "
-              f"{BOLD}E{RESET} edit cooldown   {BOLD}C{RESET} recalibrate   "
-              f"{BOLD}B{RESET} beeps: {beep_state}")
+              f"{BOLD}E{RESET} edit cooldown   {BOLD}C{RESET} recalibrate")
+        print(f"  {BOLD}B{RESET} beeps: {beep_state}   {BOLD}S{RESET} sleepy: {sleep_state}   "
+              f"{BOLD}L{RESET} lazy: {lazy_state}")
         print()
         time.sleep(1)
 
