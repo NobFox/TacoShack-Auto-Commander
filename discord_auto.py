@@ -33,6 +33,7 @@ DEFAULTS = {
     "sleepy_mode":  False,
     "sleep_start":  "00:00",
     "sleep_end":    "07:30",
+    "sleep_jitter": 20,
     "lazy_mode":       False,
     "lazy_work_min":   60,
     "lazy_work_max":   120,
@@ -64,6 +65,7 @@ adjusting   = False
 pending_logs = []   # log lines held back while a prompt is on screen
 lazy_break_until = None   # set while a lazy break is in progress
 lazy_next_break  = None   # when the next lazy break is due
+sleep_window     = None   # (start, end, end_base) for the current/next night
 start_time  = None
 beeped_for  = set()
 last_keypress_time = 0.0
@@ -96,27 +98,57 @@ def parse_hhmm(value, fallback):
         return (int(h), int(m))
 
 
+def plan_sleep_window(end_base: datetime):
+    """Build one night's concrete sleep window around the configured end
+    time, with each edge nudged by a random offset rolled once per night."""
+    global sleep_window
+    start_mins = SLEEP_START[0] * 60 + SLEEP_START[1]
+    end_mins   = SLEEP_END[0]   * 60 + SLEEP_END[1]
+    duration   = (end_mins - start_mins) % (24 * 60)   # handles crossing midnight
+
+    # Never let the jitter be big enough to flip start past end
+    jitter = max(0.0, min(SLEEP_JITTER, duration / 2 - 1))
+
+    start = end_base - timedelta(minutes=duration) + timedelta(minutes=random.uniform(-jitter, jitter))
+    end   = end_base + timedelta(minutes=random.uniform(-jitter, jitter))
+    sleep_window = (start.replace(second=0, microsecond=0),
+                    end.replace(second=0, microsecond=0),
+                    end_base)
+
+
 def in_sleep_window(now: datetime = None) -> bool:
-    """True if the clock is inside the sleep window. Handles windows that
-    cross midnight (e.g. 23:00-07:30) as well as ones that don't."""
-    now  = now or datetime.now()
-    mins = now.hour * 60 + now.minute
-    start = SLEEP_START[0] * 60 + SLEEP_START[1]
-    end   = SLEEP_END[0]   * 60 + SLEEP_END[1]
-    if start == end:
-        return False                      # zero-length window, never sleeps
-    if start < end:
-        return start <= mins < end        # same-day window
-    return mins >= start or mins < end    # crosses midnight
+    """True if we're inside tonight's (jittered) sleep window."""
+    now = now or datetime.now()
+
+    start_mins = SLEEP_START[0] * 60 + SLEEP_START[1]
+    end_mins   = SLEEP_END[0]   * 60 + SLEEP_END[1]
+    if start_mins == end_mins:
+        return False                              # zero-length window, never sleeps
+
+    if sleep_window is None:
+        # First plan: today's configured end time, or tomorrow's if today's
+        # window has definitely finished even with the latest possible jitter
+        end_base = now.replace(hour=SLEEP_END[0], minute=SLEEP_END[1], second=0, microsecond=0)
+        if end_base + timedelta(minutes=SLEEP_JITTER) <= now:
+            end_base += timedelta(days=1)
+        plan_sleep_window(end_base)
+
+    # Window over — roll the next night. Stepping from the previous base
+    # (not from "now") stops an early wake-up replanning the same morning.
+    replanned = False
+    while now >= sleep_window[1]:
+        plan_sleep_window(sleep_window[2] + timedelta(days=1))
+        replanned = True
+    if replanned:
+        s, e, _ = sleep_window
+        log(f"Next sleep window: {s.strftime('%H:%M')} to {e.strftime('%H:%M')}.", CYAN)
+
+    return sleep_window[0] <= now < sleep_window[1]
 
 
 def sleep_until() -> datetime:
     """When the current sleep window ends."""
-    now    = datetime.now()
-    target = now.replace(hour=SLEEP_END[0], minute=SLEEP_END[1], second=0, microsecond=0)
-    if target <= now:
-        target += timedelta(days=1)
-    return target
+    return sleep_window[1] if sleep_window else datetime.now()
 
 
 def sane_range(data, min_key, max_key):
@@ -135,7 +167,7 @@ def sane_range(data, min_key, max_key):
 def load_config():
     global RANDOM_EXTRA_MIN, RANDOM_EXTRA_MAX, TASKBAR_HOVER_TIME, MSGBOX_HOVER_TIME, COMMANDS
     global discord_taskbar_pos, discord_msgbox_pos
-    global sleepy_mode, SLEEP_START, SLEEP_END
+    global sleepy_mode, SLEEP_START, SLEEP_END, SLEEP_JITTER, sleep_window
     global lazy_mode, LAZY_WORK_MIN, LAZY_WORK_MAX, LAZY_BREAK_MIN, LAZY_BREAK_MAX
 
     if os.path.exists(CONFIG_FILE):
@@ -158,6 +190,11 @@ def load_config():
     sleepy_mode = bool(data["sleepy_mode"])
     SLEEP_START = parse_hhmm(data["sleep_start"], DEFAULTS["sleep_start"])
     SLEEP_END   = parse_hhmm(data["sleep_end"],   DEFAULTS["sleep_end"])
+    try:
+        SLEEP_JITTER = max(0.0, float(data["sleep_jitter"]))
+    except (ValueError, TypeError):
+        SLEEP_JITTER = float(DEFAULTS["sleep_jitter"])
+    sleep_window = None   # replan with the new settings
 
     lazy_mode = bool(data["lazy_mode"])
     LAZY_WORK_MIN, LAZY_WORK_MAX   = sane_range(data, "lazy_work_min",  "lazy_work_max")
@@ -178,6 +215,7 @@ def save_config():
         "sleepy_mode":        sleepy_mode,
         "sleep_start":        f"{SLEEP_START[0]:02d}:{SLEEP_START[1]:02d}",
         "sleep_end":          f"{SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}",
+        "sleep_jitter":       SLEEP_JITTER,
         "lazy_mode":          lazy_mode,
         "lazy_work_min":      LAZY_WORK_MIN,
         "lazy_work_max":      LAZY_WORK_MAX,
@@ -517,9 +555,12 @@ def restagger_overdue(reason: str):
     with lock:
         now     = datetime.now()
         overdue = [c for c in COMMANDS if next_run.get(c) and next_run[c] <= now]
-        for i, cmd in enumerate(overdue):
-            next_run[cmd] = now + timedelta(seconds=10 + i * 8)
+        random.shuffle(overdue)            # no fixed order either
+        at = now + timedelta(seconds=random.uniform(10, 40))
+        for cmd in overdue:
+            next_run[cmd] = at
             beeped_for.discard(cmd)
+            at += timedelta(seconds=random.uniform(6, 15))
     log(f"{reason} — {len(overdue)} command(s) restaggered.", GREEN)
 
 
@@ -531,7 +572,7 @@ def scheduler():
         sleeping = sleepy_mode and in_sleep_window(now)
 
         if sleeping and not was_sleeping:
-            log(f"Sleepy mode — pausing until {SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}.", CYAN)
+            log(f"Sleepy mode — pausing until {sleep_until().strftime('%H:%M')}.", CYAN)
         elif was_sleeping and not sleeping:
             restagger_overdue("Sleepy mode over")
         was_sleeping = sleeping
@@ -892,6 +933,8 @@ def display_loop():
         # Hotkey bar
         beep_state  = f"{GREEN}on{RESET}" if beeps_enabled else f"{YELLOW}off{RESET}"
         sleep_win   = f"{SLEEP_START[0]:02d}:{SLEEP_START[1]:02d}-{SLEEP_END[0]:02d}:{SLEEP_END[1]:02d}"
+        if SLEEP_JITTER:
+            sleep_win += f" ±{SLEEP_JITTER:g}m"
         sleep_state = f"{GREEN}on{RESET} {sleep_win}" if sleepy_mode else f"{YELLOW}off{RESET}"
         if lazy_mode and lazy_next_break and not lazy_break_until:
             lazy_state = f"{GREEN}on{RESET} (break at {lazy_next_break.strftime('%H:%M')})"

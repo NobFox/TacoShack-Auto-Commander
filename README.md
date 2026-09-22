@@ -96,7 +96,7 @@ Launch the script via `tacoshack.bat`. On startup there's a 10 second grace peri
 
 ──────────────────────────────────────────────────────────────────────────
   P pause   T adjust timer   E edit cooldown   C recalibrate
-  B beeps: on   S sleepy: on 00:00-07:30   L lazy: on (break at 14:52)
+  B beeps: on   S sleepy: on 00:00-07:30 ±20m   L lazy: on (break at 14:52)
 ```
 
 The table sizes itself to your longest command name, so adding something like `/buy upgrade:All Boosts` keeps everything lined up. Countdowns over an hour are shown as `hh:mm:ss`. All available hotkeys are listed along the bar at the bottom, along with the current state of the beep, sleepy and lazy toggles.
@@ -128,7 +128,10 @@ Pauses everything between two times of day, so leaving the script running by mis
 
 - Default window is **00:00 to 07:30**, set by `sleep_start` and `sleep_end` in the config
 - Windows that cross midnight work fine, e.g. `23:00` to `07:30`
-- The status line shows `SLEEPING` with the resume time and a countdown
+- Both edges are randomly nudged by up to **±20 minutes** each night (`sleep_jitter` in the config), so it doesn't stop and start at the same time every day. One night it might sleep 23:45 to 07:38, the next 00:12 to 07:14. Set it to `0` for exact times
+- Each night's times are picked once and stick for that night, so it won't flick in and out of sleep
+- The status line shows `SLEEPING` with that night's actual resume time and a countdown
+- If you launch the script shortly after the nominal end time, it may still be inside that night's window and sit for a few minutes before starting. The status line will say so
 
 ### L - lazy mode (random breaks)
 
@@ -142,7 +145,7 @@ Takes a break at random intervals through the day, freeing up your screen and br
 
 **How they interact:** sleepy mode takes precedence. The lazy cycle is reset while sleeping, so you won't wake up at 07:30 straight into a break that was due at 3am - the first break of the day lands an hour or two after waking.
 
-**Catching up on resume:** several commands will have gone overdue during any pause. Rather than firing them all in the same second, they're restaggered 8 seconds apart when the script picks back up.
+**Catching up on resume:** several commands will have gone overdue during any pause. Rather than firing them all in the same second, they're restaggered when the script picks back up: the first lands 10 to 40 seconds after resuming, and the rest follow at random 6 to 15 second gaps in a shuffled order.
 
 ---
 
@@ -233,6 +236,7 @@ All settings are stored in `discord_auto_config.json` in the same folder as the 
   "sleepy_mode": false,
   "sleep_start": "00:00",
   "sleep_end": "07:30",
+  "sleep_jitter": 20,
   "lazy_mode": false,
   "lazy_work_min": 60,
   "lazy_work_max": 120,
@@ -253,6 +257,7 @@ All settings are stored in `discord_auto_config.json` in the same folder as the 
 | `sleepy_mode` | Whether sleepy mode is on (toggled with **S**) |
 | `sleep_start` | Start of the overnight pause, as `HH:MM` |
 | `sleep_end` | End of the overnight pause, as `HH:MM` |
+| `sleep_jitter` | Maximum minutes each night's start and end times are randomly moved by (`0` for exact times) |
 | `lazy_mode` | Whether lazy mode is on (toggled with **L**) |
 | `lazy_work_min` | Minimum minutes of running before a lazy break |
 | `lazy_work_max` | Maximum minutes of running before a lazy break |
